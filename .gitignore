@@ -1,48 +1,42 @@
-# Python
+# Dataset and large files
+dataset/
+dataset_splits/
+captions.json
+tokenized_captions.json
+id_mapping.json
+image_mapping.json
+metadata.csv
+
+# Model checkpoints
+checkpoints/
+
+# Training runs and results
+runs/
+results/
+
+# Python cache
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
-.Python
-*.egg-info/
-dist/
-build/
 
-# PyTorch model checkpoints (too large for GitHub)
-*.pt
-*.pth
-*.ckpt
-
-# Data files (may be too large)
-# Uncomment if these files are large
-# *.json
-# *.csv
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# Environment
-.env
-.venv
-env/
+# Virtual environments
 venv/
-ENV/
+env/
+.env
+
+# Jupyter notebooks
+.ipynb_checkpoints/
 
 # IDE
-.vscode/
 .idea/
+.vscode/
 *.swp
 *.swo
 
-# OS
+# OS files
 .DS_Store
 Thumbs.db
 
-# Large data directories (if you have them)
-# dataset/images/
-# archive/
-
-# Training outputs (keep results JSONL files, but not large checkpoints)
-# runs/*/checkpoints/*.pt
-runs/*/checkpoints/*.pt
-
+# Logs
+*.log

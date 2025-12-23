@@ -1,27 +1,60 @@
 import os
 import json
+import re
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import numpy as np
-from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
-from nltk.tokenize import word_tokenize
+from collections import Counter
 
 from im_text_dataset import ArtCaptionDataset
 from im_text_model import ImageCaptioner
 
+def simple_tokenize(text):
+    """Simple word tokenization - lowercase and split on non-alphanumeric."""
+    text = text.lower()
+    tokens = re.findall(r'\b\w+\b', text)
+    return tokens
+
+def get_ngrams(tokens, n):
+    """Get n-grams from a list of tokens."""
+    return [tuple(tokens[i:i+n]) for i in range(len(tokens) - n + 1)]
+
+def compute_bleu_n(reference_tokens, candidate_tokens, n):
+    """Compute BLEU-n score with smoothing."""
+    if len(candidate_tokens) < n:
+        return 0.0
+    
+    ref_ngrams = Counter(get_ngrams(reference_tokens, n))
+    cand_ngrams = Counter(get_ngrams(candidate_tokens, n))
+    
+    # Count matching n-grams (clipped by reference count)
+    matches = 0
+    for ngram, count in cand_ngrams.items():
+        matches += min(count, ref_ngrams.get(ngram, 0))
+    
+    total = len(list(cand_ngrams.elements()))
+    
+    # Add smoothing to avoid zero scores
+    if total == 0:
+        return 0.0
+    
+    return (matches + 1) / (total + 1)  # Add-one smoothing
+
 def compute_bleu_scores(reference, candidate):
-    """Compute BLEU-1, BLEU-2, BLEU-3, BLEU-4 scores."""
-    ref_tokens = word_tokenize(reference.lower())
-    cand_tokens = word_tokenize(candidate.lower())
+    """Compute BLEU-1, BLEU-2, BLEU-3, BLEU-4 scores using simple tokenization."""
+    ref_tokens = simple_tokenize(reference)
+    cand_tokens = simple_tokenize(candidate)
     
-    smoothing = SmoothingFunction().method1
+    if len(cand_tokens) == 0 or len(ref_tokens) == 0:
+        return {"bleu_1": 0.0, "bleu_2": 0.0, "bleu_3": 0.0, "bleu_4": 0.0}
     
-    bleu_1 = sentence_bleu([ref_tokens], cand_tokens, weights=(1, 0, 0, 0), smoothing_function=smoothing)
-    bleu_2 = sentence_bleu([ref_tokens], cand_tokens, weights=(0.5, 0.5, 0, 0), smoothing_function=smoothing)
-    bleu_3 = sentence_bleu([ref_tokens], cand_tokens, weights=(0.33, 0.33, 0.33, 0), smoothing_function=smoothing)
-    bleu_4 = sentence_bleu([ref_tokens], cand_tokens, weights=(0.25, 0.25, 0.25, 0.25), smoothing_function=smoothing)
+    # Compute individual n-gram precisions
+    bleu_1 = compute_bleu_n(ref_tokens, cand_tokens, 1)
+    bleu_2 = compute_bleu_n(ref_tokens, cand_tokens, 2)
+    bleu_3 = compute_bleu_n(ref_tokens, cand_tokens, 3)
+    bleu_4 = compute_bleu_n(ref_tokens, cand_tokens, 4)
     
     return {
         "bleu_1": float(bleu_1),
@@ -41,11 +74,12 @@ def evaluate_test_set(backbone, root="dataset", tokenizer_name="gpt2", max_len=2
         raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
     
     print(f"Loading checkpoint from {ckpt_path}")
-    ckpt = torch.load(ckpt_path, map_location=device)
+    ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
     
     # Load dataset
     test_ds = ArtCaptionDataset(root, "test", tokenizer_name, max_len, image_size)
-    test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
+    # num_workers=0 avoids slow multiprocessing startup on Windows
+    test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=True)
     
     # Initialize model
     vocab_size = len(test_ds.tokenizer)
@@ -94,7 +128,9 @@ def evaluate_test_set(backbone, root="dataset", tokenizer_name="gpt2", max_len=2
                     break
                     
                 generated = generated_texts[i]
-                reference = test_ds.captions[img_id]
+                # Use the caption key mapping (handles ID format differences)
+                caption_key = test_ds.id_to_caption_key[img_id]
+                reference = test_ds.captions[caption_key]
                 
                 # Compute BLEU scores
                 bleu_scores = compute_bleu_scores(reference, generated)

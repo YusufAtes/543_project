@@ -3,19 +3,44 @@ import csv
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
+from torch.optim.lr_scheduler import ReduceLROnPlateau, CosineAnnealingWarmRestarts
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 from im_text_dataset import ArtCaptionDataset
 from im_text_model import ImageCaptioner
 
-def run_epoch(model, loader, optimizer, device, pad_token_id, train=True):
+
+class EarlyStopping:
+    """Early stopping to stop training when validation loss doesn't improve."""
+    def __init__(self, patience=5, min_delta=0.0, verbose=True):
+        self.patience = patience
+        self.min_delta = min_delta
+        self.verbose = verbose
+        self.counter = 0
+        self.best_loss = None
+        self.should_stop = False
+        
+    def __call__(self, val_loss):
+        if self.best_loss is None:
+            self.best_loss = val_loss
+        elif val_loss > self.best_loss - self.min_delta:
+            self.counter += 1
+            if self.verbose:
+                print(f"  EarlyStopping: {self.counter}/{self.patience} (no improvement)")
+            if self.counter >= self.patience:
+                self.should_stop = True
+        else:
+            self.best_loss = val_loss
+            self.counter = 0
+        return self.should_stop
+
+def run_epoch(model, loader, optimizer, device, pad_token_id, loss_fn, train=True):
     if train:
         model.train()
     else:
         model.eval()
 
-    loss_fn = nn.CrossEntropyLoss(ignore_index=pad_token_id)
     total_loss, total_tokens = 0.0, 0
 
     pbar = tqdm(loader, desc="train" if train else "val", leave=False)
@@ -48,9 +73,19 @@ def run_epoch(model, loader, optimizer, device, pad_token_id, train=True):
     return avg_loss, ppl
 
 def train_backbone(backbone, root="dataset", tokenizer_name="gpt2", max_len=256, image_size=224,
-                   batch_size=16, epochs=20, lr=2e-4, backbone_pretrained=True):
-    """Train a single backbone model with logging and plotting."""
+                   batch_size=16, epochs=20, lr=2e-4, backbone_pretrained=True,
+                   patience=5, label_smoothing=0.1, lr_scheduler_type="plateau"):
+    """
+    Train a single backbone model with logging, plotting, early stopping, and LR scheduling.
+    
+    Args:
+        backbone: CNN backbone name (resnet18, resnet34, resnet50)
+        patience: Early stopping patience (stop if val loss doesn't improve for N epochs)
+        label_smoothing: Label smoothing factor (0.0 = no smoothing, 0.1 = 10% smoothing)
+        lr_scheduler_type: "plateau" (ReduceLROnPlateau) or "cosine" (CosineAnnealingWarmRestarts)
+    """
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"\nUsing device: {device}")
     
     # Create directories for this backbone
     run_dir = f"runs/im2text_{backbone}"
@@ -58,17 +93,20 @@ def train_backbone(backbone, root="dataset", tokenizer_name="gpt2", max_len=256,
     os.makedirs(run_dir, exist_ok=True)
     os.makedirs(ckpt_dir, exist_ok=True)
     
-    # CSV logging setup
+    # CSV logging setup (with learning rate column)
     history_file = os.path.join(run_dir, "history.csv")
     with open(history_file, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["epoch", "train_loss", "train_ppl", "val_loss", "val_ppl"])
+        writer.writerow(["epoch", "train_loss", "train_ppl", "val_loss", "val_ppl", "lr"])
     
     # Track history for plotting
-    history = {"epoch": [], "train_loss": [], "train_ppl": [], "val_loss": [], "val_ppl": []}
+    history = {"epoch": [], "train_loss": [], "train_ppl": [], "val_loss": [], "val_ppl": [], "lr": []}
     
     print(f"\n{'='*60}")
     print(f"Training {backbone}")
+    print(f"  - LR: {lr}, Scheduler: {lr_scheduler_type}")
+    print(f"  - Label smoothing: {label_smoothing}")
+    print(f"  - Early stopping patience: {patience}")
     print(f"{'='*60}")
     
     # ---- datasets ----
@@ -90,12 +128,42 @@ def train_backbone(backbone, root="dataset", tokenizer_name="gpt2", max_len=256,
         backbone_pretrained=backbone_pretrained,
     ).to(device)
     
+    # ---- loss function with label smoothing ----
+    loss_fn = nn.CrossEntropyLoss(ignore_index=pad_id, label_smoothing=label_smoothing)
+    
+    # ---- optimizer ----
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
+    
+    # ---- learning rate scheduler ----
+    if lr_scheduler_type == "plateau":
+        # Reduce LR when validation loss plateaus
+        scheduler = ReduceLROnPlateau(
+            optimizer, mode='min', factor=0.5, patience=2, 
+            verbose=True, min_lr=1e-6
+        )
+    elif lr_scheduler_type == "cosine":
+        # Cosine annealing with warm restarts
+        scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=5, T_mult=2, eta_min=1e-6)
+    else:
+        scheduler = None
+    
+    # ---- early stopping ----
+    early_stopping = EarlyStopping(patience=patience, verbose=True)
     
     best_val = float("inf")
     for epoch in range(1, epochs + 1):
-        tr_loss, tr_ppl = run_epoch(model, train_loader, optimizer, device, pad_id, train=True)
-        va_loss, va_ppl = run_epoch(model, val_loader,   optimizer, device, pad_id, train=False)
+        # Get current learning rate
+        current_lr = optimizer.param_groups[0]['lr']
+        
+        tr_loss, tr_ppl = run_epoch(model, train_loader, optimizer, device, pad_id, loss_fn, train=True)
+        va_loss, va_ppl = run_epoch(model, val_loader,   optimizer, device, pad_id, loss_fn, train=False)
+        
+        # Update learning rate scheduler
+        if scheduler is not None:
+            if lr_scheduler_type == "plateau":
+                scheduler.step(va_loss)
+            else:
+                scheduler.step()
         
         # Log to history
         history["epoch"].append(epoch)
@@ -103,13 +171,14 @@ def train_backbone(backbone, root="dataset", tokenizer_name="gpt2", max_len=256,
         history["train_ppl"].append(tr_ppl)
         history["val_loss"].append(va_loss)
         history["val_ppl"].append(va_ppl)
+        history["lr"].append(current_lr)
         
         # Write to CSV
         with open(history_file, "a", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow([epoch, tr_loss, tr_ppl, va_loss, va_ppl])
+            writer.writerow([epoch, tr_loss, tr_ppl, va_loss, va_ppl, current_lr])
         
-        print(f"Epoch {epoch:02d} | train loss {tr_loss:.4f} ppl {tr_ppl:.2f} | val loss {va_loss:.4f} ppl {va_ppl:.2f}")
+        print(f"Epoch {epoch:02d} | train loss {tr_loss:.4f} ppl {tr_ppl:.2f} | val loss {va_loss:.4f} ppl {va_ppl:.2f} | lr {current_lr:.2e}")
         
         ckpt = {
             "model": model.state_dict(),
@@ -131,16 +200,24 @@ def train_backbone(backbone, root="dataset", tokenizer_name="gpt2", max_len=256,
         
         # Generate plots after each epoch
         plot_training_curves(history, run_dir)
+        
+        # Check early stopping
+        if early_stopping(va_loss):
+            print(f"\nEarly stopping triggered at epoch {epoch}!")
+            break
     
     print(f"\nTraining complete for {backbone}. Results saved to {run_dir}")
+    print(f"Best validation loss: {best_val:.4f}")
     return model, history
 
 def plot_training_curves(history, run_dir):
-    """Generate and save loss and perplexity curves."""
+    """Generate and save loss, perplexity, and learning rate curves."""
     epochs = history["epoch"]
     
+    # Combined plot: Loss + Perplexity
+    plt.figure(figsize=(12, 5))
+    
     # Loss curves
-    plt.figure(figsize=(10, 5))
     plt.subplot(1, 2, 1)
     plt.plot(epochs, history["train_loss"], label="Train Loss", marker="o")
     plt.plot(epochs, history["val_loss"], label="Val Loss", marker="s")
@@ -175,6 +252,18 @@ def plot_training_curves(history, run_dir):
     plt.grid(True, alpha=0.3)
     plt.savefig(os.path.join(run_dir, "ppl_curves.png"), dpi=150, bbox_inches="tight")
     plt.close()
+    
+    # Learning rate curve
+    if "lr" in history and history["lr"]:
+        plt.figure(figsize=(8, 4))
+        plt.plot(epochs, history["lr"], label="Learning Rate", marker="o", color="green", linewidth=2)
+        plt.xlabel("Epoch", fontsize=12)
+        plt.ylabel("Learning Rate", fontsize=12)
+        plt.title("Learning Rate Schedule", fontsize=14)
+        plt.yscale('log')
+        plt.grid(True, alpha=0.3)
+        plt.savefig(os.path.join(run_dir, "lr_curve.png"), dpi=150, bbox_inches="tight")
+        plt.close()
 
 def main():
     # ---- config ----
@@ -183,9 +272,14 @@ def main():
     max_len = 256
     image_size = 224
     batch_size = 16
-    epochs = 20
+    epochs = 50  # Increased max epochs (early stopping will prevent overfitting)
     lr = 2e-4
     backbone_pretrained = True   # allowed: pretrained on ImageNet, but NOT a pretrained captioner
+    
+    # Training improvements
+    patience = 5           # Early stopping: stop if val loss doesn't improve for 5 epochs
+    label_smoothing = 0.1  # Label smoothing to prevent overconfident predictions
+    lr_scheduler = "plateau"  # "plateau" or "cosine"
     
     # Train all three backbones
     backbones = ["resnet18", "resnet34", "resnet50"]
@@ -201,6 +295,9 @@ def main():
             epochs=epochs,
             lr=lr,
             backbone_pretrained=backbone_pretrained,
+            patience=patience,
+            label_smoothing=label_smoothing,
+            lr_scheduler_type=lr_scheduler,
         )
     
     print(f"\n{'='*60}")
