@@ -42,11 +42,14 @@ class ImageCaptioner(nn.Module):
         if backbone == "resnet18":
             net = models.resnet18(weights=models.ResNet18_Weights.DEFAULT if backbone_pretrained else None)
             enc_dim = 512
+        elif backbone == "resnet34":
+            net = models.resnet34(weights=models.ResNet34_Weights.DEFAULT if backbone_pretrained else None)
+            enc_dim = 512
         elif backbone == "resnet50":
             net = models.resnet50(weights=models.ResNet50_Weights.DEFAULT if backbone_pretrained else None)
             enc_dim = 2048
         else:
-            raise ValueError("backbone must be resnet18 or resnet50")
+            raise ValueError("backbone must be resnet18, resnet34, or resnet50")
 
         self.cnn = nn.Sequential(*list(net.children())[:-2])  # up to conv5 feature map (B, C, H, W)
         self.enc_proj = nn.Linear(enc_dim, d_model)
