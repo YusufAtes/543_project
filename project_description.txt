@@ -251,54 +251,159 @@ Validation: perplexity, BLEU, ROUGE, BERTScore
 
 
 
-3. Text-to-Image Model (Caption Encoder + Image Decoder)
-Goal
-Generate a visual reconstruction conditioned on text.
-Model Architecture
-You will create a conditional generative model trained from scratch:
-Caption Encoder
-Train a text encoder from scratch:
+3. Text-to-Image Generation Pipeline
 
+**(Tokenized Caption Encoder + Image Generator)**
 
-Embedding layer (dim 256–512)
+### Goal
 
+Generate **128 × 128 RGB images** conditioned on **pre-tokenized textual descriptions**, such that each image visually represents the semantics of the given caption.
 
-Transformer encoder (2–4 layers)
+---
 
+### Inputs
 
-Output a global text embedding vector (mean-pooled or [CLS] token)
+* **Text Input:**
 
+  * Pre-tokenized captions loaded from
+    **`tokenized_captions.json`**
+  * Each caption is already tokenized and mapped to integer token IDs
+  * No raw text processing (tokenization) is performed inside the model
 
-Image Decoder
-Pick one of these architectures:
-Option A — Conditional VAE (most stable from scratch)
-Latent space z ~ N(0, I)
+---
 
+### Model Input / Output
 
-Conditioning: concatenate text embedding with z
+* **Model Input:**
 
+  * `tokenized_captions` (sequence of token IDs)
 
-Decoder: deconvolutional network producing image
+* **Model Output:**
 
+  * Generated images of shape
+    **(128, 128, 3)**
 
-Loss:
-L = L_pixel + β KL(q(z|x,t) || p(z))
+---
 
-Option B — Conditional GAN (higher quality)
-Generator: deconvolutional network
+### Task Objective
 
+Learn a **conditional generative model** that maps tokenized textual descriptions to visually coherent images that reflect the semantic content of the captions.
 
-Discriminator: CNN predicting real vs fake conditioned on text
+---
 
+## Model Architecture
 
-Loss:
-L_GAN = E[log D(x,t)] + E[log(1 - D(G(t), t))]
+The system consists of two main components trained **from scratch**.
 
-Option C — Diffusion Model From Scratch (requires >10k images)
-U-Net
+---
 
+### 1. Caption Encoder
 
-Conditional noise prediction εθ(x_t, t, textEmbed)
+Encodes tokenized captions into a fixed-length global text embedding.
+
+**Architecture**
+
+* Embedding Layer
+
+  * Vocabulary-sized lookup table
+  * Embedding dimension: **256–512**
+
+* Transformer Encoder
+
+  * **2–4 layers**
+  * Multi-head self-attention
+  * Positional encoding applied to token sequences
+
+* Output Representation
+
+  * Global text embedding obtained via:
+
+    * Mean pooling over token embeddings **or**
+    * A dedicated `[CLS]` token
+
+**Output:**
+
+* Text embedding vector `t ∈ ℝ^d`
+
+---
+
+### 2. Image Generator (Decoder)
+
+Generates a **128 × 128 image** conditioned on the text embedding.
+
+Choose **one** of the following architectures:
+
+---
+
+## Option A — Conditional Variational Autoencoder (Recommended for Stability)
+
+**Latent Space**
+
+* Sample latent vector
+  `z ~ N(0, I)`
+
+**Conditioning**
+
+* Concatenate text embedding with latent vector:
+  `[z ; t]`
+
+**Decoder**
+
+* Deconvolutional (ConvTranspose) network
+* Progressive upsampling to **128 × 128 × 3**
+
+**Loss Function**
+[
+L = L_{pixel} + \beta , KL\big(q(z|x,t);||;p(z)\big)
+]
+
+---
+
+## Option B — Conditional GAN (Higher Image Quality)
+
+**Generator**
+
+* Deconvolutional network
+* Conditioned on text embedding `t`
+
+**Discriminator**
+
+* CNN that predicts **real vs. fake**
+* Receives both image and corresponding text embedding
+
+**Adversarial Loss**
+[
+L_{GAN} = \mathbb{E}[\log D(x, t)] + \mathbb{E}[\log(1 - D(G(t), t))]
+]
+
+---
+
+## Option C — Conditional Diffusion Model (Data-Heavy)
+
+**Model**
+
+* U-Net backbone
+
+**Conditioning**
+
+* Text embedding injected via cross-attention or feature modulation
+
+**Objective**
+
+* Predict noise term:
+  [
+  \varepsilon_\theta(x_t, t, \text{textEmbed})
+  ]
+
+> ⚠️ Recommended only if dataset size exceeds **10k images**
+
+---
+
+### Summary
+
+* **Input:** Tokenized captions from `tokenized_captions.json`
+* **Output:** Generated **128 × 128 images**
+* **Purpose:** Learn image synthesis directly from textual descriptions using a fully conditional generative pipeline trained from scratch
 
 
 
