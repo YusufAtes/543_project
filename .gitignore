@@ -10,9 +10,9 @@ metadata.csv
 # Model checkpoints
 checkpoints/
 
-# Training runs and results
-runs/
-results/
+# # Training runs and results
+# runs/
+# results/
 
 # Python cache
 __pycache__/
