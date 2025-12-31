@@ -133,21 +133,32 @@ Files: `text_im_dataset.py`, `text_im_model.py`, `text_im_train.py`, `text_im_te
 - **Image decoder**: conditional decoder with:
   - latent sampling \(z\) from \( \mu(text), \log\sigma^2(text) \)
   - FiLM conditioning injected into residual blocks
-  - progressive upsampling \(4\rightarrow8\rightarrow16\rightarrow32\rightarrow64\rightarrow128\)
+  - progressive upsampling \(4\rightarrow8\rightarrow16\rightarrow32\rightarrow64\rightarrow128\) (updated to **nearest-neighbor upsampling** to reduce blur)
   - output `tanh` producing pixels in **[-1, 1]**
 
 **Loss function (implemented in `text_im_model.py`)**
-- Reconstruction: **L1 loss**
-- Optional perceptual term: **VGG‑19 feature L1** (ImageNet-pretrained VGG19 blocks)
-- Regularization: **KL divergence**, weighted by \(\beta\)
-- Total: \(L = L_{L1} + \lambda_{perc} L_{perc} + \beta L_{KL}\)
+- **Base reconstruction**: **L1 loss**
+- **Perceptual term (two options)**:
+  - **ResNet perceptual + style** (new default): feature-space L1 using ImageNet-pretrained ResNet blocks + optional Gram/style loss (`ResNetPerceptualLoss`)
+  - **VGG‑19 perceptual** (older option): feature-space L1 using ImageNet-pretrained VGG19 blocks (`PerceptualLoss`)
+- **Edge sharpening term** (new): **Sobel edge loss** (L1 distance between edge maps), controlled by `edge_weight`
+- **Regularization**: **KL divergence**, weighted by \(\beta\)
+- Total (generator): \(L_G = L_{L1} + \lambda_{perc} L_{perc} + \lambda_{style} L_{style} + \lambda_{edge} L_{edge} + \beta L_{KL}\)
+- **Adversarial component (new)**: optional conditional GAN hinge loss using a **ResNet projection discriminator** (`TextImageDiscriminator`):
+  - Discriminator: \(L_D = \mathbb{E}[\max(0, 1 - D(x, t))] + \mathbb{E}[\max(0, 1 + D(\hat{x}, t))]\)
+  - Generator: adds \( \lambda_{adv}\, \mathbb{E}[-D(\hat{x}, t)] \)
 
 **Training (implemented in `text_im_train.py`)**
 - Backbones: `resnet18`, `resnet34`, `resnet50` are used as *capacity presets* (controls decoder channel width)
 - Epochs: up to **100**
 - LR: **1e‑4**, AdamW, grad clip 1.0
 - KL annealing: \(\beta: 0 \rightarrow 1e\!-\!4\) over **15** epochs
-- Perceptual weight: **0.1**
+- Perceptual weight: default **0.1**
+- Edge weight: default **0.10**
+- GAN (enabled by default in current code):
+  - discriminator backbone: **ResNet‑18**
+  - discriminator LR: default **2e‑4**
+  - adversarial weight: default **0.02**
 - Scheduler: default **OneCycleLR**
 - Early stopping: patience **15**
 
